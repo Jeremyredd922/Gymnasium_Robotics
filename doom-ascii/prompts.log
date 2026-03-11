@@ -1,0 +1,65 @@
+================================================================================
+  DOOM ASCII - PROMPT LOG
+  Project: doom-ascii | Started: 2026-03-11
+================================================================================
+
+#001 | 2026-03-11
+--------------------------------------------------------------------------------
+build Doom using ViZDoom. Make the graphics use ASCII to make it more
+lightweight. create a speckit that can be used for this task and keep a log of
+every prompt that i use for this project
+--------------------------------------------------------------------------------
+Response summary:
+  - Created doom-ascii/ project directory
+  - Created SPEC.md (project speckit)
+  - Created prompts.log (this file)
+  - Implemented main.py, ascii_renderer.py, game.py
+  - Added doom-ascii entry to root CLAUDE.md
+
+#002 | 2026-03-11
+--------------------------------------------------------------------------------
+with the implementation of ViZDoom, make it so that the user is not playing
+the game but AI is
+--------------------------------------------------------------------------------
+Response summary:
+  - Created agent.py with RandomAgent, WanderAgent, HeuristicAgent
+  - Rewrote main.py: removed all keyboard input, replaced with agent.act() loop
+  - Updated ascii_renderer.py: HUD shows AI strategy + episode counter
+  - Updated game.py: added POSITION_X, POSITION_Y, ANGLE game variables
+  - Added --agent / --episodes / --fps CLI args to main.py
+
+#003 | 2026-03-11
+--------------------------------------------------------------------------------
+log these to the prompt log
+--------------------------------------------------------------------------------
+Response summary:
+  - Confirmed #001 and #002 were already logged
+  - Appended #003 (this entry) to prompts.log
+
+#004 | 2026-03-11
+--------------------------------------------------------------------------------
+build the original graphics engine that is intended for vizdoom rather than
+the ascii engine
+--------------------------------------------------------------------------------
+Response summary:
+  - Created graphics_renderer.py: pygame window, RGB24 buffer, custom HUD bar
+    (episode, HP bar with colour coding, ammo, kills, AI strategy, live FPS)
+  - Updated game.py: setup_game() now accepts color= param; RGB24 for graphics,
+    GRAY8 for ASCII; in-game Doom HUD enabled for graphics, disabled for ASCII
+  - Updated agent.py: HeuristicAgent now normalises RGB→gray before analysis
+  - Updated ascii_renderer.py: added close() no-op for shared interface
+  - Updated main.py: both renderers wired through unified interface
+
+#005 | 2026-03-11
+--------------------------------------------------------------------------------
+/btw keep the ascii engine as an option that the user can choose before the
+game starts
+--------------------------------------------------------------------------------
+Response summary:
+  - Added interactive startup menu to main.py: prompts for renderer + agent
+    when not specified via CLI flags
+  - Both renderers selectable: 'graphics' (pygame) and 'ascii' (terminal)
+  - Menu is skipped when --renderer and --agent are passed directly
+  - Added --scale flag (default 3 → 960×720 window) for graphics mode
+
+================================================================================
