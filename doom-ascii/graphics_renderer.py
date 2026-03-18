@@ -8,6 +8,7 @@ and live FPS.
 Interface matches AsciiRenderer so main.py can use either interchangeably.
 """
 import sys
+import os
 import numpy as np
 
 try:
@@ -45,15 +46,16 @@ class GraphicsRenderer:
     """
 
     def __init__(self, scale: int = 3):
-        self._scale  = scale
-        self._win_w  = _GAME_W * scale
-        self._win_h  = _GAME_H * scale + _HUD_H
-        self._active = False
-        self._clock  = None
-        self._screen = None
-        self._font   = None
-        self._font_b = None
-        self._fps    = 0.0
+        self._scale           = scale
+        self._win_w           = _GAME_W * scale
+        self._win_h           = _GAME_H * scale + _HUD_H
+        self._active          = False
+        self._clock           = None
+        self._screen          = None
+        self._font            = None
+        self._font_b          = None
+        self._fps             = 0.0
+        self.restart_requested = False
         self._init_pygame()
 
     # ------------------------------------------------------------------
@@ -66,17 +68,25 @@ class GraphicsRenderer:
         pygame.display.flip()
         pygame.event.pump()
 
-    def show_agent_banner(self, agent_name: str):
+    def show_banner(self, name: str, player_mode: bool = False):
         self._screen.fill(_BLACK)
-        lines = [
-            f"AI Agent: {agent_name.upper()}",
-            "Press ESC or close window to quit",
-        ]
-        y = self._win_h // 2 - 40
+        if player_mode:
+            from agent import HumanAgent
+            lines = [
+                "PLAYER MODE",
+                HumanAgent.CONTROLS,
+                "ESC / close window to quit",
+            ]
+        else:
+            lines = [
+                f"AI Agent: {name.upper()}",
+                "ESC / close window to quit",
+            ]
+        y = self._win_h // 2 - len(lines) * 22
         for line in lines:
             surf = self._font_b.render(line, True, _GREEN)
             self._screen.blit(surf, ((self._win_w - surf.get_width()) // 2, y))
-            y += 42
+            y += 44
         pygame.display.flip()
         pygame.event.pump()
 
@@ -87,7 +97,7 @@ class GraphicsRenderer:
         pygame.mouse.set_visible(True)
 
     def render(self, screen_buf, health=100, ammo=50, kills=0,
-               episode=1, strategy="") -> bool:
+               episode=1, strategy="", player_mode=False) -> bool:
         """
         Draw one frame.  Returns False if the user closed the window / pressed ESC.
 
@@ -103,6 +113,8 @@ class GraphicsRenderer:
             if event.type == pygame.KEYDOWN:
                 if event.key in (pygame.K_ESCAPE, pygame.K_q):
                     return False
+                if event.key == pygame.K_r:
+                    self.restart_requested = True
 
         # --- Game frame -------------------------------------------------------
         buf = self._normalise_buffer(screen_buf)
@@ -122,13 +134,15 @@ class GraphicsRenderer:
         hud_y = _GAME_H * self._scale
         pygame.draw.rect(self._screen, _DARK, (0, hud_y, self._win_w, _HUD_H))
         pygame.draw.line(self._screen, _DOOM_RED, (0, hud_y), (self._win_w, hud_y), 2)
-        self._draw_hud(hud_y, health, ammo, kills, episode, strategy)
+        self._draw_hud(hud_y, health, ammo, kills, episode, strategy, player_mode)
 
         pygame.display.flip()
-        self._fps = self._clock.tick(60) and self._clock.get_fps()
+        self._clock.tick(15)
+        self._fps = self._clock.get_fps()
         return True
 
-    def render_episode_end(self, episode, kills, total_kills, duration):
+    def render_episode_end(self, episode, kills, total_kills, duration,
+                           map_name=None, completed=False, next_map=None):
         if not self._active:
             return
         # Semi-transparent dark overlay.
@@ -137,11 +151,18 @@ class GraphicsRenderer:
         self._screen.blit(overlay, (0, 0))
 
         mins, secs = divmod(int(duration), 60)
+        if completed and next_map:
+            status = f"{map_name} cleared!  Advancing to {next_map}..."
+        elif completed:
+            status = f"{map_name} cleared!"
+        elif map_name:
+            status = f"Died on {map_name}"
+        else:
+            status = f"Episode {episode} ended"
         lines = [
-            f"Episode {episode} ended",
+            status,
             f"Kills: {kills}   Total: {total_kills}",
-            f"Survived: {mins:02d}:{secs:02d}",
-            "Starting next episode...",
+            f"Time: {mins:02d}:{secs:02d}",
         ]
         y = self._win_h // 2 - len(lines) * 22
         for line in lines:
@@ -162,16 +183,47 @@ class GraphicsRenderer:
     # ------------------------------------------------------------------
 
     def _init_pygame(self):
+        # Tell SDL to position the window at the centre of the primary display
+        # before the window is created — avoids it appearing behind other windows.
+        os.environ.setdefault("SDL_VIDEO_CENTERED", "1")
+
         pygame.init()
         pygame.display.set_caption("doom-ascii  |  AI Spectator")
-        self._screen  = pygame.display.set_mode((self._win_w, self._win_h))
+        self._screen  = pygame.display.set_mode(
+            (self._win_w, self._win_h), pygame.SHOWN
+        )
         self._clock   = pygame.time.Clock()
         fsize         = max(13, self._scale * 5)
         self._font    = pygame.font.SysFont("monospace", fsize)
         self._font_b  = pygame.font.SysFont("monospace", fsize + 4, bold=True)
         self._active  = True
+        self._raise_window()
 
-    def _draw_hud(self, hud_y, health, ammo, kills, episode, strategy):
+    def _raise_window(self):
+        """Bring the pygame window to the foreground on all platforms."""
+        pygame.event.pump()   # let SDL process pending events first
+
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                hwnd = pygame.display.get_wm_info().get("window")
+                if hwnd:
+                    user32 = ctypes.windll.user32
+                    # Briefly set HWND_TOPMOST then restore to HWND_NOTOPMOST
+                    # so the window pops to the front without staying on top.
+                    SWP_NOMOVE  = 0x0002
+                    SWP_NOSIZE  = 0x0001
+                    HWND_TOPMOST    = -1
+                    HWND_NOTOPMOST  = -2
+                    flags = SWP_NOMOVE | SWP_NOSIZE
+                    user32.SetWindowPos(hwnd, HWND_TOPMOST,   0, 0, 0, 0, flags)
+                    user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags)
+                    user32.SetForegroundWindow(hwnd)
+            except Exception:
+                pass   # non-fatal — window still opens, just may not be on top
+
+    def _draw_hud(self, hud_y, health, ammo, kills, episode, strategy,
+                  player_mode=False):
         pad  = 10
         row1 = hud_y + 6
         row2 = hud_y + 6 + self._font.get_height() + 2
@@ -188,15 +240,20 @@ class GraphicsRenderer:
         cx = self._win_w // 2
         for text, col, row in (
             (f"AMMO:{ammo:3d}", _YELLOW, row1),
-            (f"KILLS:{kills:3d}", _WHITE,  row2),
+            (f"KILLS:{kills:3d}", _WHITE, row2),
         ):
             surf = self._font.render(text, True, col)
             self._screen.blit(surf, (cx - surf.get_width() // 2, row))
 
-        # Right — AI strategy & FPS.
-        strat = f"AI:{strategy[:20]}"
-        fps   = f"FPS:{self._fps:4.1f}"
-        for text, col, row in ((strat, _GREEN, row1), (fps, _DIM, row2)):
+        # Right — player label or AI strategy, plus FPS.
+        if player_mode:
+            right_top = ("YOU", _GREEN)
+            right_bot = ("W/S/A/D  SPC:fire", _DIM)
+        else:
+            right_top = (f"AI:{strategy[:20]}", _GREEN)
+            right_bot = (f"FPS:{self._fps:4.1f}", _DIM)
+
+        for (text, col), row in zip((right_top, right_bot), (row1, row2)):
             surf = self._font.render(text, True, col)
             self._screen.blit(surf, (self._win_w - surf.get_width() - pad, row))
 

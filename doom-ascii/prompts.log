@@ -62,4 +62,379 @@ Response summary:
   - Menu is skipped when --renderer and --agent are passed directly
   - Added --scale flag (default 3 → 960×720 window) for graphics mode
 
+#009 | 2026-03-11
+--------------------------------------------------------------------------------
+make an additional option that allows the user to play the game on their own
+if they choose rather than making the AI play the game.
+--------------------------------------------------------------------------------
+Response summary:
+  - Added HumanAgent class to agent.py:
+      * Graphics mode: pygame.key.get_pressed() for held-key detection
+      * ASCII mode: _KeyboardReader background thread (msvcrt/Windows,
+        tty+termios/Unix); quit_requested flag set on Ctrl-C / ESC
+      * Controls: W/S fwd/back, A/D turn, Q/E strafe, Space fire, F use
+  - Restructured startup menu in main.py:
+      * New "Play mode" question: "Watch AI play" or "Play yourself"
+      * Human mode skips the AI agent selection step
+  - Renamed show_agent_banner → show_banner(name, player_mode=) in both renderers
+  - Added player_mode= param to render() and _draw_hud() / _build_hud():
+      * HUD shows "YOU:" label + control hints instead of "AI:" + strategy
+  - Added --mode {ai,human} CLI flag to skip the menu entirely
+
+#010 | 2026-03-11
+--------------------------------------------------------------------------------
+/btw review different algorithms that are commonly used in video games and
+replace floodfill and other algorithms that may not be as useful for the AI agent
+--------------------------------------------------------------------------------
+Response summary:
+  - Removed FloodFillAgent (basic BFS frontier — redundant with A*)
+  - Added ThetaStarAgent: any-angle pathfinding via Theta* algorithm
+      * Bresenham line-of-sight check allows shortcuts across grid diagonals
+      * Produces smoother paths through Doom's corridors; used in strategy
+        game research (StarCraft II, top-down RPGs)
+  - Added PotentialFieldsAgent: reactive artificial potential fields
+      * No path planning — computes attractive force toward unexplored cells
+        + repulsive forces from walls every frame
+      * Smooth, real-time obstacle avoidance; used in robotics and as a
+        local-avoidance layer in modern game engines
+      * Stuck detection + random spin to escape local minima
+  - Final AI agent roster: random, wander, heuristic, astar,
+    theta_star, dijkstra, potential_fields
+
+#011 | 2026-03-14
+--------------------------------------------------------------------------------
+would it be beneficial in this case to find the AI by tracking where the
+hitbox is for the enemies? / yes
+--------------------------------------------------------------------------------
+Response summary:
+  - Enabled labels_buffer in game.py (set_labels_buffer_enabled(True))
+  - Added _ENEMY_KEYWORDS tuple covering all standard Doom enemy actor names
+  - Added _visible_enemies(state): filters state.labels to enemy types, sorted
+    by bbox area (largest = closest first)
+  - Added _screen_width(state): safe pixel-width extraction for any buffer format
+  - Added _aim_action(action, label, screen_width): turns toward enemy bbox
+    centre, fires; returns True when crosshair is aligned
+  - HeuristicAgent: checks labels first, falls back to motion detection
+  - _GridAgent + PotentialFieldsAgent: proactive targeting on any visible
+    enemy; hitbox aim during combat retreat instead of blind-fire
+
+#012 | 2026-03-14
+--------------------------------------------------------------------------------
+the ai should stop moving, check the surrounding area (try 5 meters), and
+make sure everything in the room has been killed before it goes to the next area
+--------------------------------------------------------------------------------
+Response summary:
+  - Added _RoomClearer class: state machine triggered on kill-count increase
+  - On each kill: agent stops, rotates 360° tracking cumulative angle from
+    game_variables[5]; engages any enemy that appears (pausing rotation)
+  - _nearby_enemies(): depth-buffer distance gate (~160 units ≈ 5 m)
+  - After full 360° sweep with no enemies → resumes exploration
+  - Wired into HeuristicAgent, _GridAgent, PotentialFieldsAgent
+  - Priority order: retreat → clearing → proactive targeting → exploration
+
+#013 | 2026-03-14
+--------------------------------------------------------------------------------
+the ai does not stop moving when it detects an enemy within 5 meters.
+--------------------------------------------------------------------------------
+Response summary:
+  - Bug: proactive targeting blocks set BTN_MOVE_FORWARD when crosshair aligned,
+    regardless of enemy distance
+  - Added _enemy_distance(state, label): samples depth_buffer at label centre
+  - Fixed all three targeting sites (HeuristicAgent, _GridAgent,
+    PotentialFieldsAgent): BTN_MOVE_FORWARD only set when enemy > 160 units away
+  - Agent now stands still and fires when enemy is within 5 m
+
+#014 | 2026-03-14
+--------------------------------------------------------------------------------
+reduce the range of enemy detection to 2 meters and allow the ai to decide
+if it wants to pick up a weapon. log all of the prompts from this conversation.
+--------------------------------------------------------------------------------
+Response summary:
+  - Reduced _CLEAR_RADIUS from 160 to 64 Doom units (≈ 2 metres)
+  - Added _WEAPON_ITEM_KEYWORDS, _AMMO_KEYWORDS, _PICKUP_KEYWORDS tuples
+  - Added _visible_pickups(state): returns weapon/ammo labels sorted by area
+  - Added _WeaponSeeker class:
+      * Decides once per object_id (declined set persists per episode)
+      * Weapons: 85% pickup chance; ammo: 100% if ammo<25, 65% if 25–75,
+        25% if >75
+      * Steers agent toward chosen item (turn + BTN_MOVE_FORWARD)
+  - Wired _WeaponSeeker into HeuristicAgent, _GridAgent, PotentialFieldsAgent
+  - Priority order: retreat → clearing → enemy targeting → weapon pickup → explore
+  - Logged prompts #011–#014 to prompts.log
+
+#006 | 2026-03-11
+--------------------------------------------------------------------------------
+reduce the fps to 15, include an A* algorithm to help the ai find a better
+path through the levels
+--------------------------------------------------------------------------------
+Response summary:
+  - Reduced FPS to 15: tick(15) in graphics_renderer.py, default=15 in main.py
+  - Added astar() function to agent.py: 8-directional A* with per-cell costs
+    (unknown=2x, visited=1.5x, free=1x, wall=impassable), octile heuristic,
+    max_nodes budget for real-time safety
+  - Added AStarAgent to agent.py:
+      * Builds 256×256 occupancy grid (CELL_SIZE=64 Doom units per cell)
+      * Ray-casts depth buffer each frame to mark FREE / WALL cells
+      * BFS to find nearest UNKNOWN cell as exploration target
+      * A* replans path every 30 frames
+      * Steers by comparing current angle to waypoint bearing
+      * Switches to combat mode (retreat + fire) on health loss
+  - Enabled depth buffer in game.py (set_depth_buffer_enabled)
+  - Registered 'astar' in AGENTS dict and startup menu
+
+#007 | 2026-03-11
+--------------------------------------------------------------------------------
+make it so that the pygame window is prioritized and opens over other windows
+that are currently open
+--------------------------------------------------------------------------------
+Response summary:
+  - Set SDL_VIDEO_CENTERED env var before pygame.init() so window appears
+    centred on screen from the start
+  - Added _raise_window() called at end of _init_pygame():
+      * Windows: ctypes SetWindowPos(HWND_TOPMOST) then SetWindowPos(HWND_NOTOPMOST)
+        + SetForegroundWindow — pops to front without staying permanently on top
+      * Other platforms: pygame.event.pump() ensures SDL flushes pending events
+  - Failure is non-fatal (try/except) — window still opens if ctypes call fails
+
+#008 | 2026-03-11
+--------------------------------------------------------------------------------
+/btw also include other algorithms that may help the ai find its way to the
+end of the level safely
+--------------------------------------------------------------------------------
+Response summary:
+  - Added FloodFillAgent: flood-fill frontier exploration, turns toward the
+    nearest reachable unexplored sector
+  - Added DijkstraAgent: Dijkstra's shortest-path to lowest-cost unexplored
+    cell, weighing danger (recent damage) into cell costs dynamically
+  - Both agents share the same occupancy grid + depth-buffer ray-cast as
+    AStarAgent; combat fallback (retreat + fire on health loss) included
+  - All three planning agents registered in AGENTS dict and startup menu
+
+================================================================================
+
+#015 | 2026-03-14
+--------------------------------------------------------------------------------
+the ai player is still moving when it detects enemies. set the movement speed
+of the player to 0 when its shooting at an enemy and set it to the original
+value when the ai player no longer detects an enemy nearby. set the enemy
+detection range to 16 doom units
+--------------------------------------------------------------------------------
+Response summary:
+  - Removed BTN_MOVE_FORWARD from all targeting/shooting code paths in
+    HeuristicAgent, _GridAgent, and PotentialFieldsAgent
+  - Removed _enemy_distance() — no longer needed since movement is always 0
+    when shooting, regardless of distance
+  - Reduced _CLEAR_RADIUS from 64 to 16 Doom units (~0.5 m)
+  - Movement resumes automatically when no enemy label is detected
+
+#016 | 2026-03-14
+--------------------------------------------------------------------------------
+remove all of the current algorithms. rebuild the list with 3 new algorithms
+that are commonly used in video games that use AI pathfinding
+--------------------------------------------------------------------------------
+Response summary:
+  - Removed: RandomAgent, WanderAgent, HeuristicAgent, AStarAgent,
+    ThetaStarAgent, DijkstraAgent, FloodFillAgent, PotentialFieldsAgent
+  - Added FlowFieldAgent (Supreme Commander / Planetary Annihilation style):
+      * Multi-source Dijkstra from goal outward; numpy vectorized direction grid
+      * O(1) per-frame lookup; rebuilds every _FIELD_TTL=60 frames
+  - Added WaypointGraphAgent (Quake / Half-Life / Counter-Strike style):
+      * Sparse free-cell sampling every _WP_SPACING=12 cells
+      * Bresenham LOS check connects visible pairs; A* on sparse graph
+      * Rebuilds graph every _GRAPH_TTL=90 frames
+  - Added HPAStarAgent (Dragon Age: Origins / StarCraft style):
+      * 16×16 cluster grid; abstract entrance nodes connected via local A*
+      * Two-level search: abstract path then local refinement per cluster
+  - Updated AGENTS dict: {flow_field, waypoint, hpa_star}
+  - Updated main.py: default agent → hpa_star, menu default index → 3
+
+#017 | 2026-03-14
+--------------------------------------------------------------------------------
+the app has an error somewhere in main. search for any bugs that may be in
+the file and fix them
+--------------------------------------------------------------------------------
+Response summary:
+  - Fixed main.py line 6: "Usage:1" → "Usage:" (stray character in docstring)
+  - Fixed graphics_renderer.py line 137: short-circuit FPS bug
+      * Buggy:  self._fps = self._clock.tick(15) and self._clock.get_fps()
+      * Fixed:  self._clock.tick(15); self._fps = self._clock.get_fps()
+      * Root cause: tick() returns ms elapsed (0 on fast frames) → and
+        short-circuits to 0 instead of calling get_fps()
+  - Fixed agent.py _GridAgent docstring: stale references to old agents
+    replaced with FlowFieldAgent, WaypointGraphAgent, HPAStarAgent
+
+#018 | 2026-03-14
+--------------------------------------------------------------------------------
+log the prompts
+--------------------------------------------------------------------------------
+Response summary:
+  - Appended entries #015–#018 to prompts.log
+
+================================================================================
+
+#019 | 2026-03-15
+--------------------------------------------------------------------------------
+what would happen if i made the player ai function the same as the enemy ai
+--------------------------------------------------------------------------------
+Response summary:
+  - Explained that Doom enemy AI uses: charge directly at player when visible,
+    fire while moving, wander randomly when out of sight
+  - Added MonsterAgent class to agent.py:
+      * _visible_enemies() detects enemies via labels buffer
+      * If enemy visible: turn toward it, shoot, advance
+      * If no enemy: random wander (turn 20% chance, else move forward)
+      * Falls back to random action if no state
+
+#020 | 2026-03-15
+--------------------------------------------------------------------------------
+is there a way to make the ai player more accurate and approach one enemy at a
+time rather than skipping to the next enemy before the first one is dead?
+--------------------------------------------------------------------------------
+Response summary:
+  - Added object_id-based target locking to _GridAgent via _pick_target()
+  - _pick_target: re-acquires same object_id if still visible, else picks new target
+  - Enemies sorted by proximity (bbox area) so nearest is always preferred
+  - _target_id persists until that enemy disappears from labels buffer
+
+#021 | 2026-03-15
+--------------------------------------------------------------------------------
+can you have the player AI track where the enemy AI is based on their entity tag?
+--------------------------------------------------------------------------------
+Response summary:
+  - Confirmed object_id from ViZDoom labels buffer IS the entity tag
+  - Already implemented in #020; no code change needed
+  - Explained: each Label has object_id (unique per actor), object_name (e.g.
+    "Zombieman"), bounding box coords used for aim computation
+
+#022 | 2026-03-15
+--------------------------------------------------------------------------------
+the player ai gets stuck looking at a wall in the first room
+--------------------------------------------------------------------------------
+Response summary:
+  - Root cause: _GridAgent._plan() returned 1-cell path on first frame, which
+    was immediately consumed → fell into oscillating fallback (turn 70 / move 30)
+  - Fixed FlowFieldAgent, WaypointGraphAgent, HPAStarAgent: replaced oscillating
+    "searching" fallback with direct BFS navigation to nearest unknown cell
+  - WaypointGraphAgent._plan: moved BFS target lookup before waypoint check,
+    added plain astar() fallback when no waypoints exist yet
+  - FlowFieldAgent: fixed both "field goal reached" and "no field" code paths
+
+#023 | 2026-03-15
+--------------------------------------------------------------------------------
+can we make the player AI smarter
+--------------------------------------------------------------------------------
+Response summary:
+  - Added strafing: combat now alternates left/right strafe instead of backing
+    into walls (_strafe_dir flips on stuck detection)
+  - Added stuck detection: tracks _prev_px/_prev_py; if player hasn't moved in
+    30 frames → increments _stuck_t; at _stuck_t >= 30 presses BTN_USE (doors)
+  - Added danger priority: _ENEMY_DANGER dict weights by enemy type
+    (Cyberdemon > SpiderMastermind > ... > Zombieman); enemies sorted by score
+  - Added item seeking: _WeaponSeeker now accepts health param; always grabs
+    health items regardless of decision randomness
+  - Reordered act() priority: combat → targeting → items → room clearing → nav
+  - Added _ENEMY_DETECT_RANGE = 650 Doom units; target locking only within range
+
+#024 | 2026-03-15
+--------------------------------------------------------------------------------
+make a way to kill the game when its being played on the ascii version, make
+the key to end the game c
+--------------------------------------------------------------------------------
+Response summary:
+  - Added _AsciiQuitWatcher class to main.py: uses _KeyboardReader background
+    thread; sets quit_requested on c/C/Ctrl-C/ESC
+  - quit_watcher created in main() for AI + ASCII mode
+  - Each frame: quit_watcher.check() called; if quit_requested → running=False
+
+#025 | 2026-03-15
+--------------------------------------------------------------------------------
+allow the user to restart the current episode by pressing the r key
+--------------------------------------------------------------------------------
+Response summary:
+  - Added restart_requested flag to _AsciiQuitWatcher; set on r/R keypress
+  - Added restart_requested to HumanAgent; set on 'r' in both pygame and
+    terminal keyboard handlers
+  - Added restart_requested to GraphicsRenderer; set on K_r pygame event
+  - main.py: restart_signalled checks all three sources each frame
+  - On restart: episode_num decremented, continue to next iteration
+
+#026 | 2026-03-15
+--------------------------------------------------------------------------------
+include more variations of levels that can be played after the first one has
+been successfully completed
+--------------------------------------------------------------------------------
+Response summary:
+  - Added DOOM2_MAPS list to game.py: MAP01–MAP32
+  - Added get_map_sequence(scenario_path): returns DOOM2_MAPS for freedoom2.wad,
+    [] for user-specified scenarios
+  - Added change_map(game, map_name): close() → set_doom_map() → init()
+  - main.py: map_sequence + map_idx tracked; after cleared episode advances
+    map_idx and calls change_map(); renderers show current/next map name
+
+#027 | 2026-03-15
+--------------------------------------------------------------------------------
+make it so that the level is only ended when the player dies or if the player
+kills all of the ai in the level, in this case you would generate level 2
+--------------------------------------------------------------------------------
+Response summary:
+  - Added kill-count stagnation timer: _CLEAR_FRAMES=150; if kills>0 and no new
+    kill for 150 consecutive frames → all_cleared=True, break inner loop
+  - Post-episode logic: if not all_cleared and not player_died → silent restart
+    same map (episode_num -= 1; continue) — handles player walking into exit
+  - Map advance only triggered on all_cleared; player death restarts same map
+  - game.is_player_dead() used to distinguish death from exit
+
+#028 | 2026-03-15
+--------------------------------------------------------------------------------
+add an option to choose an algorithm at random
+--------------------------------------------------------------------------------
+Response summary:
+  - Added "random" to CLI --agent choices in main.py
+  - Added "random" option to startup menu agent selection
+  - build_agent() in agent.py: if name == "random", picks random.choice(list(AGENTS))
+  - Verified: random.seed(42) → FlowFieldAgent selected correctly
+
+#029 | 2026-03-15
+--------------------------------------------------------------------------------
+log this conversation
+--------------------------------------------------------------------------------
+Response summary:
+  - Appended entries #019–#029 to prompts.log
+
+#030 | 2026-03-18
+--------------------------------------------------------------------------------
+make sure the player finds a path through each level without getting stuck into
+a corner
+--------------------------------------------------------------------------------
+Response summary:
+  - Root cause: BFS wandering fallback used direct _steer() toward unexplored
+    cell, ignoring walls between agent and target — agent would drive into corners
+  - Fix 1: All BFS wandering fallbacks now use A* (max_nodes=2000) to compute a
+    wall-avoiding next step instead of steering straight at the target.
+    Applied in _GridAgent.act() and both BFS fallbacks in FlowFieldAgent.act()
+  - Fix 2: Stuck recovery (stuck_t >= 30) now also forces a replan/_field_t=0
+    (picks a fresh target) and adds BTN_MOVE_BACKWARD + random turn to physically
+    escape the corner, rather than just pressing USE in place
+  - Changes confined to agent.py only
+
+#031 | 2026-03-18
+--------------------------------------------------------------------------------
+log this conversation into the speckit
+--------------------------------------------------------------------------------
+Response summary:
+  - Appended entries #030–#031 to prompts.log
+
+#032 | 2026-03-18
+--------------------------------------------------------------------------------
+allow the player to find a control scheme in the menu for each the AI player
+mode and the manual playing mode
+--------------------------------------------------------------------------------
+Response summary:
+  - Added _show_controls() in main.py: prints AI Spectator and Human Player
+    control tables, then waits for Enter
+  - Changed play-mode selection from a one-shot _pick to a while loop so
+    picking "Controls" (new option 3) shows the scheme and loops back to mode
+    selection instead of exiting the menu
+  - No changes to agent.py or renderer files
+
 ================================================================================
