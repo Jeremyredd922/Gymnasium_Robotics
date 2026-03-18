@@ -12,14 +12,6 @@ A Python CLI tool (standard library only) that reads local Claude Code conversat
 - **Commands**: `list [--limit N]`, `summary <id-prefix>`, `summary-all [--limit N] [--days D]`, `search <query>`
 - **Architecture**: `reviewer.py` (CLI entry point) -> `conversation.py` (data models/JSONL parsing) -> `formatter.py` (output formatting)
 
-### hw1 (Scala - DePaul CSC347)
-Conway's Game of Life implementation in Scala 3.5.0.
-- **Requirements**: Java 21 JDK, SBT
-- **Build**: `cd hw1 && sbt compile`
-- **Test**: `sbt test` or `sbt testOnly fp1tests` (single suite) or `sbt ~testOnly fp1tests` (continuous)
-- **IDE**: VSCode + Scala (Metals) extension
-- **Note**: `build.sbt` and files in `src/main/java/` are read-only (grading infrastructure)
-
 ### flashcard-app
 Interactive CLI flashcard study tool with spaced repetition scoring.
 - **Usage**: `cd flashcard-app && python flashcards.py`
