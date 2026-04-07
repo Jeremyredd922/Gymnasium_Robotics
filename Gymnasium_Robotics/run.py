@@ -18,14 +18,13 @@ import numpy as np
 from env_utils import list_envs, make_env, print_env_info
 from agent import RandomAgent, GoalConditionedAgent
 
-DEFAULT_ENV = "FetchReach-v3"
-DEFAULT_EPISODES = 3
-DEFAULT_MAX_STEPS = 50
+DEFAULT_ENV = "FetchReach-v4"
+DEFAULT_EPISODES = 10
+DEFAULT_MAX_STEPS = 150
 
 
 def run_episodes(env_id: str, agent_type: str, episodes: int, max_steps: int, render: bool):
-    render_mode = "human" if render else None
-    env = make_env(env_id, render_mode=render_mode)
+    env = make_env(env_id, render_mode="human", max_episode_steps=max_steps)
 
     print(f"\n=== {env_id} ===")
     print_env_info(env)

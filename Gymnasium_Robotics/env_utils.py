@@ -29,9 +29,9 @@ def list_envs(prefix: str | None = None) -> list[str]:
     return ids
 
 
-def make_env(env_id: str, render_mode: str | None = None) -> gym.Env:
+def make_env(env_id: str, render_mode: str | None = None, max_episode_steps: int | None = None) -> gym.Env:
     """Create and return a Gymnasium-Robotics environment."""
-    return gym.make(env_id, render_mode=render_mode)
+    return gym.make(env_id, render_mode=render_mode, max_episode_steps=max_episode_steps)
 
 
 def print_env_info(env: gym.Env) -> None:
