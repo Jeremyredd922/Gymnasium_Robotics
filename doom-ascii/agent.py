@@ -1274,6 +1274,434 @@ class HPAStarAgent(_GridAgent):
 
 
 # ---------------------------------------------------------------------------
+# MDPAgent — Q-learning Markov Decision Process agent
+# ---------------------------------------------------------------------------
+
+# Abstract action indices (high-level strategies / options).
+_MDP_COMBAT    = 0   # dodge-strafe + shoot at visible enemy
+_MDP_AIM_SHOOT = 1   # careful aim then advance when aligned
+_MDP_FLEE      = 2   # back away from enemy
+_MDP_PICKUP    = 3   # move toward visible pickup
+_MDP_CLEAR     = 4   # 360° sweep for hidden enemies
+_MDP_EXPLORE   = 5   # A* pathfinding toward unexplored cells
+_MDP_SEARCH    = 6   # slow spin scan (map fully explored)
+_MDP_USE_DOOR  = 7   # press USE + back up (stuck recovery)
+_N_MDP_ACTIONS = 8
+
+
+def _mdp_state(state, health, ammo, kills, kills_prev, stuck_t):
+    """
+    Extract a compact discrete feature tuple used as the MDP state (Q-table key).
+
+    Features
+    --------
+    enemy_vis  : 0/1   — at least one enemy visible
+    enemy_cls  : 0/1   — nearest enemy within 250 depth units
+    n_enemies  : 0/1/2 — 0, 1, or ≥2 visible enemies
+    hp_bucket  : 0–3   — 0=<25  1=<50  2=<75  3=≥75 HP
+    ammo_buck  : 0–3   — 0=0  1=<25  2=<75  3=≥75 rounds
+    has_pick   : 0/1   — a pickup item is visible
+    has_hp_pk  : 0/1   — a health/armor pickup is visible
+    just_kill  : 0/1   — kills rose since the last frame
+    is_stuck   : 0/1   — no meaningful movement for ≥20 frames
+
+    Up to ~3 072 reachable entries — fits comfortably in an in-memory dict.
+    """
+    if state is None:
+        return (0, 0, 0, 2, 2, 0, 0, 0, 0)
+
+    enemies = _visible_enemies(state)
+    n_vis   = min(len(enemies), 2)
+
+    enemy_close = 0
+    if enemies:
+        depth = getattr(state, 'depth_buffer', None)
+        if depth is not None:
+            if depth.ndim == 3:
+                depth = depth[:, :, 0]
+            if depth.ndim == 2:
+                H, W = depth.shape
+                lbl  = enemies[0]
+                cx   = max(0, min(W - 1, int(lbl.x + lbl.width  / 2)))
+                cy   = max(0, min(H - 1, int(lbl.y + lbl.height / 2)))
+                d    = float(depth[cy, cx])
+                enemy_close = int(0 < d < 250)
+            else:
+                enemy_close = 1
+        else:
+            enemy_close = 1
+
+    if   health < 25: hp = 0
+    elif health < 50: hp = 1
+    elif health < 75: hp = 2
+    else:             hp = 3
+
+    if   ammo == 0: am = 0
+    elif ammo < 25: am = 1
+    elif ammo < 75: am = 2
+    else:           am = 3
+
+    pickups   = _visible_pickups(state)
+    has_pick  = int(bool(pickups))
+    has_hp_pk = int(any(
+        any(kw in p.object_name for kw in _HEALTH_KEYWORDS)
+        for p in pickups
+    ))
+
+    return (
+        int(bool(enemies)),        # enemy_vis
+        enemy_close,               # enemy_cls
+        n_vis,                     # n_enemies
+        hp,                        # hp_bucket
+        am,                        # ammo_buck
+        has_pick,                  # has_pick
+        has_hp_pk,                 # has_hp_pk
+        int(kills > kills_prev),   # just_kill
+        int(stuck_t >= 20),        # is_stuck
+    )
+
+
+class MDPAgent(_GridAgent):
+    """
+    Q-learning Markov Decision Process agent for doom-ascii.
+
+    Decision-making is modelled as a semi-MDP over a compact discrete state
+    space.  Eight high-level strategies (options) are available; the agent
+    selects among them with an ε-greedy policy backed by a Q-table updated
+    online using the TD(0) Q-learning rule:
+
+        Q(s,a) ← Q(s,a) + α · [r + γ · max_a′ Q(s′,a′) − Q(s,a)]
+
+    After each frame the reward signal (kills, health delta, exploration
+    progress, stuck penalty, alive bonus) drives table updates.  Over many
+    episodes the agent learns when to fight, flee, heal, explore, or clear.
+
+    The Q-table persists across episodes within a session so learning is
+    cumulative.  ε decays from 0.40 toward 0.05 as episodes accumulate.
+
+    Hyper-parameters
+    ----------------
+    α = 0.15    learning rate
+    γ = 0.95    discount factor
+    ε = 0.40 → 0.05  per-episode ε decay of 0.002
+    Commit window: 8 frames (shorter on critical override)
+    """
+
+    strategy = "MDP"
+
+    _ALPHA     = 0.15
+    _GAMMA     = 0.95
+    _EPS_START = 0.40
+    _EPS_MIN   = 0.05
+    _EPS_DECAY = 0.002    # subtracted from ε each episode
+    _COMMIT    = 8        # frames to execute the chosen strategy before re-evaluating
+
+    def __init__(self):
+        super().__init__()
+        # Q-table: state-tuple → list of Q-values, one per abstract action.
+        # Optimistic initialisation (1.0) encourages early exploration of all options.
+        self._q          = {}
+        self._epsilon    = self._EPS_START
+        self._n_ep       = 0
+
+        # Current committed abstract action and countdown.
+        self._cur_act    = _MDP_EXPLORE
+        self._commit_t   = 0
+
+        # Bookkeeping for reward computation and Q-update.
+        self._s_prev     = None   # MDP state at previous frame
+        self._a_prev     = None   # abstract action chosen at previous frame
+        self._kills_prev = 0      # kill count at previous frame
+        self._cells_prev = 0      # explored-cell count at previous frame
+
+    def reset(self):
+        # Preserve Q-table and learning state across episodes.
+        q_saved  = self._q
+        eps      = max(self._EPS_MIN,
+                       self._EPS_START - (self._n_ep + 1) * self._EPS_DECAY)
+        n_ep     = self._n_ep + 1
+        # super().reset() calls _GridAgent.reset() → self.__init__() which
+        # would wipe _q; we restore it immediately after.
+        super().reset()
+        self._q          = q_saved
+        self._epsilon    = eps
+        self._n_ep       = n_ep
+        self._cur_act    = _MDP_EXPLORE
+        self._commit_t   = 0
+        self._s_prev     = None
+        self._a_prev     = None
+        self._kills_prev = 0
+        self._cells_prev = 0
+
+    # ---- Q-table helpers -------------------------------------------------------
+
+    def _qv(self, s):
+        """Return (initialising if absent) the Q-value vector for state s."""
+        if s not in self._q:
+            self._q[s] = [1.0] * _N_MDP_ACTIONS
+        return self._q[s]
+
+    def _best_act(self, s, pool=None):
+        qv = self._qv(s)
+        candidates = list(range(_N_MDP_ACTIONS)) if pool is None else pool
+        return max(candidates, key=lambda a: qv[a])
+
+    def _choose(self, s, pool=None):
+        """ε-greedy action selection over *pool* (all actions if None)."""
+        candidates = list(range(_N_MDP_ACTIONS)) if pool is None else pool
+        if random.random() < self._epsilon:
+            return random.choice(candidates)
+        return self._best_act(s, candidates)
+
+    def _td_update(self, s, a, r, s_next):
+        """One-step Q-learning update."""
+        qv       = self._qv(s)
+        qv_next  = self._qv(s_next)
+        target   = r + self._GAMMA * max(qv_next)
+        qv[a]   += self._ALPHA * (target - qv[a])
+
+    # ---- Reward shaping --------------------------------------------------------
+
+    def _reward(self, health, kills, new_cells):
+        """
+        Per-frame reward signal.
+
+        Kills       : +50 each  (primary objective)
+        Health gain : +0.5 / HP  (incentivise picking up health)
+        Health loss : -1.0 / HP  (penalise taking damage)
+        Exploration : +0.5 per new grid cell revealed
+        Alive bonus : +0.05 per frame
+        Stuck       : -0.2 per frame when stuck
+        """
+        r   = (kills - self._kills_prev) * 50.0
+        dh  = health - self._prev_health
+        r  += dh * (0.5 if dh > 0 else 1.0)
+        r  += new_cells * 0.5
+        r  += 0.05
+        if self._stuck_t >= 20:
+            r -= 0.2
+        return r
+
+    # ---- Override detection ----------------------------------------------------
+
+    def _override(self, s):
+        """
+        Return a forced abstract action for critical conditions, or None to
+        let the commitment timer and Q-table decide normally.
+
+        Critical overrides bypass Q-table to keep the agent alive:
+          • Critical HP + health pickup visible  → grab it immediately
+          • Critical HP + enemy close            → flee now
+          • Stuck                                → open door / unstick
+        """
+        _, enemy_cls, _, hp, _, _, has_hp_pk, _, is_stuck = s
+        if hp == 0 and has_hp_pk:
+            return _MDP_PICKUP
+        if hp == 0 and enemy_cls:
+            return _MDP_FLEE
+        if is_stuck:
+            return _MDP_USE_DOOR
+        return None
+
+    # ---- Low-level strategy executors ------------------------------------------
+
+    def _do_combat(self, state, angle_deg):
+        """Strafe-dodge while shooting at the locked target."""
+        action = make_no_op()
+        target = self._pick_target(_visible_enemies(state))
+        if target is not None:
+            _aim_action(action, target, _screen_width(state))
+        else:
+            action[BTN_ATTACK] = True
+        action[BTN_MOVE_RIGHT if self._strafe_dir > 0 else BTN_MOVE_LEFT] = True
+        self.strategy = "MDP:combat"
+        return action
+
+    def _do_aim(self, state, px, py, angle_deg):
+        """Careful aim; advance only when crosshair is aligned."""
+        action = make_no_op()
+        target = self._pick_target(_visible_enemies(state))
+        if target is None:
+            return None
+        aligned = _aim_action(action, target, _screen_width(state))
+        if aligned:
+            action[BTN_MOVE_FORWARD] = True
+        self.strategy = "MDP:aim_shoot"
+        return action
+
+    def _do_flee(self, angle_deg):
+        """Back away from enemy while strafing perpendicular."""
+        action = make_no_op()
+        action[BTN_MOVE_BACKWARD] = True
+        action[BTN_MOVE_LEFT if self._strafe_dir > 0 else BTN_MOVE_RIGHT] = True
+        self.strategy = "MDP:flee"
+        return action
+
+    def _do_pickup(self, state, ammo, health):
+        """Steer toward the best visible pickup item."""
+        act = self._seeker.update(state, ammo, health)
+        if act is not None:
+            self.strategy = "MDP:pickup"
+        return act
+
+    def _do_clear(self, state, kills, angle_deg):
+        """360° room-clearing sweep after a kill."""
+        act = self._clearer.update(state, kills, angle_deg)
+        if act is not None:
+            self.strategy = "MDP:clear"
+        return act
+
+    def _do_explore(self, state, px, py, angle_deg, gx, gy):
+        """A* navigation toward the nearest unexplored cell."""
+        target = self._nearest_unknown_bfs(gx, gy)
+        if target is None:
+            self.strategy = "MDP:explore(done)"
+            return None
+        path   = astar(self.grid, (gx, gy), target, max_nodes=2000)
+        action = make_no_op()
+        if path and len(path) > 1:
+            twx, twy = self._grid_to_world(*path[1])
+            action   = self._steer(action, px, py, angle_deg, twx, twy)
+        else:
+            action[BTN_MOVE_FORWARD] = True
+        self.strategy = "MDP:explore"
+        return action
+
+    def _do_search(self):
+        """Alternating spin/forward scan when the map is fully explored."""
+        action = make_no_op()
+        self._scan_t -= 1
+        if self._scan_t <= 0:
+            self._scan_phase = not self._scan_phase
+            self._scan_t = 70 if self._scan_phase else 30
+        if self._scan_phase:
+            action[BTN_TURN_RIGHT] = True
+        else:
+            action[BTN_MOVE_FORWARD] = True
+        self.strategy = "MDP:search"
+        return action
+
+    def _do_use_door(self):
+        """Stuck recovery: USE the wall, back up, and turn randomly."""
+        action = make_no_op()
+        action[BTN_USE]           = True
+        action[BTN_MOVE_BACKWARD] = True
+        action[BTN_TURN_LEFT if random.random() < 0.5 else BTN_TURN_RIGHT] = True
+        self._stuck_t  = 0
+        self._replan_t = 0
+        self.strategy  = "MDP:use_door"
+        return action
+
+    def _execute(self, act_idx, state, health, ammo, kills,
+                 px, py, angle_deg, gx, gy):
+        """Dispatch abstract action index to the appropriate low-level executor."""
+        if act_idx == _MDP_COMBAT:    return self._do_combat(state, angle_deg)
+        if act_idx == _MDP_AIM_SHOOT: return self._do_aim(state, px, py, angle_deg)
+        if act_idx == _MDP_FLEE:      return self._do_flee(angle_deg)
+        if act_idx == _MDP_PICKUP:    return self._do_pickup(state, ammo, health)
+        if act_idx == _MDP_CLEAR:     return self._do_clear(state, kills, angle_deg)
+        if act_idx == _MDP_EXPLORE:   return self._do_explore(state, px, py, angle_deg, gx, gy)
+        if act_idx == _MDP_SEARCH:    return self._do_search()
+        if act_idx == _MDP_USE_DOOR:  return self._do_use_door()
+        return None
+
+    # ---- Required by _GridAgent ------------------------------------------------
+
+    def _plan(self, gx, gy):
+        """Not used — MDPAgent manages navigation directly in act()."""
+        return []
+
+    # ---- Main act() ------------------------------------------------------------
+
+    def act(self, state, health, ammo, kills):
+        action = make_no_op()
+        if state is None:
+            return action
+
+        gv = state.game_variables
+        if len(gv) < 6:
+            action[BTN_MOVE_FORWARD] = True
+            self.strategy = "MDP:no_pos"
+            return action
+
+        px, py    = float(gv[3]), float(gv[4])
+        angle_deg = float(gv[5])
+        gx, gy    = self._world_to_grid(px, py)
+
+        # Update occupancy grid from depth buffer.
+        self._stamp_visited(gx, gy)
+        if state.depth_buffer is not None:
+            self._update_grid(state.depth_buffer, px, py, angle_deg)
+
+        # Track explored cells for reward (_UNKNOWN == 0, so count_nonzero works).
+        cur_cells    = int(np.count_nonzero(self.grid))
+        new_cells    = max(0, cur_cells - self._cells_prev)
+        self._cells_prev = cur_cells
+
+        # Stuck detection — updates self._stuck_t.
+        if self._prev_px is not None:
+            moved = abs(px - self._prev_px) + abs(py - self._prev_py)
+            self._stuck_t = 0 if moved >= 5 else self._stuck_t + 1
+        self._prev_px, self._prev_py = px, py
+
+        # Randomise strafe direction on damage (dodge variety).
+        if health < self._prev_health:
+            self._strafe_dir = random.choice([-1, 1])
+
+        # ------------------------------------------------------------------
+        # MDP step: extract current state, compute reward, update Q-table.
+        # ------------------------------------------------------------------
+        s = _mdp_state(state, health, ammo, kills, self._kills_prev, self._stuck_t)
+        r = self._reward(health, kills, new_cells)
+
+        # Apply Q-learning update for the previous (s, a) → (s′, r) transition.
+        if self._s_prev is not None:
+            self._td_update(self._s_prev, self._a_prev, r, s)
+
+        # ------------------------------------------------------------------
+        # Action selection: override → commit → new ε-greedy choice.
+        # ------------------------------------------------------------------
+        forced = self._override(s)
+        if forced is not None:
+            # Critical condition — bypass Q-table and commit immediately.
+            self._cur_act  = forced
+            self._commit_t = self._COMMIT
+        elif self._commit_t <= 0:
+            # Commitment window expired — pick a new strategy.
+            self._cur_act  = self._choose(s)
+            self._commit_t = self._COMMIT
+        self._commit_t -= 1
+
+        # ------------------------------------------------------------------
+        # Execute the chosen strategy; fall back greedily if it returns None.
+        # ------------------------------------------------------------------
+        result = self._execute(self._cur_act, state, health, ammo, kills,
+                               px, py, angle_deg, gx, gy)
+
+        if result is None:
+            # Primary strategy had nothing to do — try the next-best action.
+            fb_pool = [a for a in range(_N_MDP_ACTIONS) if a != self._cur_act]
+            fb      = self._best_act(s, fb_pool)
+            self._cur_act  = fb
+            self._commit_t = self._COMMIT // 2
+            result = self._execute(fb, state, health, ammo, kills,
+                                   px, py, angle_deg, gx, gy)
+
+        if result is None:
+            result = make_no_op()
+            result[BTN_MOVE_FORWARD] = True
+            self.strategy = "MDP:default"
+
+        # Save state/action/bookkeeping for next frame.
+        self._s_prev      = s
+        self._a_prev      = self._cur_act
+        self._prev_health = health
+        self._kills_prev  = kills
+
+        return result
+
+
+# ---------------------------------------------------------------------------
 # Keyboard reader (used by HumanAgent in ASCII / terminal mode)
 # ---------------------------------------------------------------------------
 
@@ -1493,6 +1921,7 @@ AGENTS = {
     "waypoint":   WaypointGraphAgent,
     "hpa_star":   HPAStarAgent,
     "monster":    MonsterAgent,
+    "mdp":        MDPAgent,
 }
 
 
