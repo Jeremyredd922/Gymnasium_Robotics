@@ -1,0 +1,54 @@
+<!-- MuJoCo MJCF: Double Pendulum
+     Two rigid links connected by hinge joints, suspended from a fixed pivot.
+     Suitable for swing-up / stabilisation experiments.
+-->
+<mujoco model="double_pendulum">
+
+  <option timestep="0.01" gravity="0 0 -9.81" integrator="RK4"/>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0"
+             width="512" height="512"/>
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.1 0.2 0.3"
+             rgb2="0.2 0.3 0.4" width="300" height="300" mark="edge" markrgb=".2 .3 .4"/>
+    <material name="grid"  texture="grid"  texrepeat="1 1" texuniform="true" reflectance=".2"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 3" dir="0 0 -1" diffuse="1 1 1"/>
+    <geom name="floor" type="plane" size="2 2 0.1" material="grid" pos="0 0 -1.1"/>
+
+    <!-- Fixed pivot at origin -->
+    <site name="pivot" pos="0 0 0" size="0.03" rgba="1 1 0 1"/>
+
+    <body name="link1" pos="0 0 0">
+      <joint name="joint1" type="hinge" axis="0 1 0" pos="0 0 0"
+             limited="false" damping="0.05" armature="0.01"/>
+      <geom name="geom1" type="capsule" fromto="0 0 0 0 0 -0.5"
+            size="0.025" rgba="0.8 0.2 0.2 1" mass="1.0"/>
+      <site name="com1" pos="0 0 -0.25" size="0.02" rgba="0.8 0.2 0.2 0.5"/>
+
+      <body name="link2" pos="0 0 -0.5">
+        <joint name="joint2" type="hinge" axis="0 1 0" pos="0 0 0"
+               limited="false" damping="0.05" armature="0.01"/>
+        <geom name="geom2" type="capsule" fromto="0 0 0 0 0 -0.5"
+              size="0.02" rgba="0.2 0.6 0.8 1" mass="1.0"/>
+        <site name="tip" pos="0 0 -0.5" size="0.03" rgba="0 1 0 1"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <!-- Torque actuators on each joint; gear scales effort -->
+    <motor name="torque1" joint="joint1" gear="1" ctrllimited="true" ctrlrange="-2 2"/>
+    <motor name="torque2" joint="joint2" gear="1" ctrllimited="true" ctrlrange="-2 2"/>
+  </actuator>
+
+  <sensor>
+    <jointpos  name="q1"  joint="joint1"/>
+    <jointpos  name="q2"  joint="joint2"/>
+    <jointvel  name="dq1" joint="joint1"/>
+    <jointvel  name="dq2" joint="joint2"/>
+  </sensor>
+
+</mujoco>

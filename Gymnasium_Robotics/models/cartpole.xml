@@ -1,0 +1,58 @@
+<!-- MuJoCo MJCF: Cart-Pole (Inverted Pendulum on a Cart)
+     A single pole balanced on a sliding cart.
+     Classic control benchmark; policy goal: keep pole upright.
+-->
+<mujoco model="cartpole">
+
+  <option timestep="0.02" gravity="0 0 -9.81" integrator="RK4"/>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0"
+             width="512" height="512"/>
+    <texture name="grid" type="2d" builtin="checker"
+             rgb1="0.15 0.25 0.35" rgb2="0.25 0.35 0.45"
+             width="300" height="300" mark="edge" markrgb=".2 .3 .4"/>
+    <material name="grid" texture="grid" texrepeat="1 1" texuniform="true" reflectance=".2"/>
+    <material name="cart" rgba="0.4 0.4 0.8 1"/>
+    <material name="pole" rgba="0.8 0.4 0.2 1"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 3" dir="0 0 -1"/>
+    <geom name="floor" type="plane" size="3 1 0.1" material="grid" pos="0 0 -0.1"/>
+
+    <!-- Track (visual only) -->
+    <geom name="track" type="capsule" fromto="-2 0 0 2 0 0"
+          size="0.02" rgba="0.5 0.5 0.5 0.4"/>
+
+    <body name="cart" pos="0 0 0">
+      <!-- Slide along the track (X axis) -->
+      <joint name="slider" type="slide" axis="1 0 0"
+             limited="true" range="-2 2" damping="0.05"/>
+      <geom name="cart_geom" type="box" size="0.15 0.08 0.06"
+            material="cart" mass="1.0"/>
+
+      <body name="pole" pos="0 0 0.06">
+        <joint name="hinge" type="hinge" axis="0 1 0" pos="0 0 0"
+               limited="false" damping="0.01" armature="0.005"/>
+        <geom name="pole_geom" type="capsule" fromto="0 0 0 0 0 0.6"
+              size="0.015" material="pole" mass="0.1"/>
+        <site name="pole_tip" pos="0 0 0.6" size="0.02" rgba="1 1 0 1"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <!-- Horizontal force on the cart -->
+    <motor name="slide_motor" joint="slider" gear="1"
+           ctrllimited="true" ctrlrange="-10 10"/>
+  </actuator>
+
+  <sensor>
+    <jointpos  name="x_cart"    joint="slider"/>
+    <jointvel  name="dx_cart"   joint="slider"/>
+    <jointpos  name="theta"     joint="hinge"/>
+    <jointvel  name="dtheta"    joint="hinge"/>
+  </sensor>
+
+</mujoco>

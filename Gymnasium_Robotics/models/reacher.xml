@@ -1,0 +1,60 @@
+<!-- MuJoCo MJCF: 2-DOF Planar Reacher
+     Two-link planar arm operating in the horizontal (XY) plane.
+     Task: move the fingertip to a target site.
+-->
+<mujoco model="reacher">
+
+  <option timestep="0.01" gravity="0 0 0" integrator="RK4"/>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.4 0.6 0.8" rgb2="0 0 0"
+             width="512" height="512"/>
+    <material name="arm"    rgba="0.7 0.7 0.7 1"/>
+    <material name="target" rgba="1.0 0.3 0.3 0.6"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 2" dir="0 0 -1"/>
+
+    <!-- Shoulder: fixed to world -->
+    <site name="shoulder" pos="0 0 0" size="0.04" rgba="1 1 0 1"/>
+
+    <body name="upper_arm" pos="0 0 0">
+      <joint name="shoulder_joint" type="hinge" axis="0 0 1" pos="0 0 0"
+             limited="false" damping="0.1" armature="0.01"/>
+      <geom name="upper_arm_geom" type="capsule" fromto="0 0 0 0.12 0 0"
+            size="0.02" material="arm" mass="0.1"/>
+
+      <body name="forearm" pos="0.12 0 0">
+        <joint name="elbow_joint" type="hinge" axis="0 0 1" pos="0 0 0"
+               limited="false" damping="0.1" armature="0.01"/>
+        <geom name="forearm_geom" type="capsule" fromto="0 0 0 0.12 0 0"
+              size="0.016" material="arm" mass="0.1"/>
+        <site name="fingertip" pos="0.12 0 0" size="0.025" rgba="0 1 0 1"/>
+      </body>
+    </body>
+
+    <!-- Randomly repositioned target in code; default placed 0.1 m from origin -->
+    <body name="target" pos="0.1 0.1 0" mocap="true">
+      <geom name="target_geom" type="sphere" size="0.025" material="target"/>
+      <site name="target_site" pos="0 0 0" size="0.025" rgba="1 0.3 0.3 0.8"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="shoulder_motor" joint="shoulder_joint" gear="1"
+           ctrllimited="true" ctrlrange="-1 1"/>
+    <motor name="elbow_motor"    joint="elbow_joint"    gear="1"
+           ctrllimited="true" ctrlrange="-1 1"/>
+  </actuator>
+
+  <sensor>
+    <jointpos  name="q_shoulder"  joint="shoulder_joint"/>
+    <jointpos  name="q_elbow"     joint="elbow_joint"/>
+    <jointvel  name="dq_shoulder" joint="shoulder_joint"/>
+    <jointvel  name="dq_elbow"    joint="elbow_joint"/>
+    <framepos  name="fingertip_pos" objtype="site" objname="fingertip"/>
+    <framepos  name="target_pos"    objtype="site" objname="target_site"/>
+  </sensor>
+
+</mujoco>

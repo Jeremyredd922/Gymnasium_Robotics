@@ -8,16 +8,37 @@ Built with Claude Code (claude-sonnet-4-6).
 
 ```
 Gymnasium_Robotics/
-├── agent.py        # RandomAgent and GoalConditionedAgent
-├── env_utils.py    # Environment creation and inspection helpers
-├── run.py          # Episode runner with configurable agent, env, and steps
-└── main.py         # Direct MuJoCo simulation entry point
+├── agent.py               # RandomAgent and GoalConditionedAgent
+├── env_utils.py           # Environment creation and inspection helpers
+├── run.py                 # Episode runner with configurable agent, env, and steps
+├── main.py                # Direct MuJoCo simulation entry point
+└── models/                # MuJoCo MJCF model files
+    ├── double_pendulum.xml # Two-link pendulum (default model)
+    ├── reacher.xml         # 2-DOF planar arm with target site
+    └── cartpole.xml        # Cart-pole (inverted pendulum on a cart)
 ```
 
 ## Agents
 
 - **RandomAgent** — uniform random action baseline
 - **GoalConditionedAgent** — naive proportional controller; moves the gripper toward `desired_goal` using the error signal between `achieved_goal` and `desired_goal`
+
+## Models
+
+The `models/` directory contains MJCF XML files ready to be loaded directly with MuJoCo:
+
+| File | Description |
+|------|-------------|
+| `double_pendulum.xml` | Two-link pendulum suspended from a fixed pivot; two hinge joints and torque actuators |
+| `reacher.xml` | Planar 2-DOF arm (shoulder + elbow) in the horizontal plane with a mock-body target |
+| `cartpole.xml` | Inverted pendulum on a sliding cart; classic stabilisation benchmark |
+
+Pass any of these (or your own XML) to `main.py` via `--model`:
+
+```bash
+python main.py --model models/cartpole.xml
+python main.py --model models/reacher.xml --no-render --steps 5000
+```
 
 ## Installation
 
