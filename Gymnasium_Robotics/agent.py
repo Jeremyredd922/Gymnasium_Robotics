@@ -1,5 +1,9 @@
 """
-Simple agents for Gymnasium-Robotics environments.
+Agents for Gymnasium-Robotics environments.
+
+  RandomAgent          — uniform random baseline
+  GoalConditionedAgent — proportional controller (no learning)
+  TrainedAgent         — wraps a saved stable-baselines3 policy
 """
 
 import numpy as np
@@ -42,3 +46,20 @@ class GoalConditionedAgent:
         action[:n] = self.gain * (goal[:n] - achieved[:n])
 
         return np.clip(action, self.action_space.low, self.action_space.high)
+
+
+class TrainedAgent:
+    """Wraps a saved stable-baselines3 SAC (or any SB3) policy."""
+
+    def __init__(self, model_path: str, algo: str = "SAC"):
+        try:
+            import stable_baselines3 as sb3
+        except ImportError:
+            raise SystemExit("stable-baselines3 is not installed. Run: pip install stable-baselines3")
+
+        cls = getattr(sb3, algo.upper())
+        self.model = cls.load(model_path)
+
+    def act(self, obs) -> np.ndarray:
+        action, _ = self.model.predict(obs, deterministic=True)
+        return action
